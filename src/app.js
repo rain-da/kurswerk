@@ -157,10 +157,70 @@ function niceTicks(min, max, n) {
   for (var v = lo; v <= hi + step / 2; v += step) out.push(+v.toFixed(10));
   return out;
 }
+/* KI-Prognose: Verlauf der letzten Wochen + Korridor für die nächsten Tage */
+function fcPath(q, fc, H) {
+  var out = [], d = new Date(), cr = q.m === 'cr', last = Date.now(), k = 0;
+  while (out.length < H) {
+    last += DAY; var wd = KW.partsIn(last).wd;
+    if (!cr && (wd === 0 || wd === 6)) continue;
+    k++;
+    var c = fc.mu * k / 100, w8 = 1.2816 * fc.s * Math.sqrt(k) / 100, w5 = 0.6745 * fc.s * Math.sqrt(k) / 100;
+    out.push({ t: last, mid: q.p * Math.exp(c), lo8: q.p * Math.exp(c - w8), hi8: q.p * Math.exp(c + w8), lo5: q.p * Math.exp(c - w5), hi5: q.p * Math.exp(c + w5) });
+  }
+  void d;
+  return out;
+}
+function drawFc(el, c) {
+  var W = Math.max(260, el.clientWidth || 600), H = c.opt.h || 240, hist = c.pts, fut = c.opt.fut, q = c.opt.q;
+  var padL = 4, padR = 62, padT = 12, padB = 24;
+  var allY = hist.map(function (p) { return p[1]; }).concat(fut.map(function (f) { return f.lo8; }), fut.map(function (f) { return f.hi8; }));
+  var y0 = Math.min.apply(null, allY), y1 = Math.max.apply(null, allY), pad = (y1 - y0) * 0.06 || 1; y0 -= pad; y1 += pad;
+  var x0 = hist[0][0], x1 = fut[fut.length - 1].t, nowX = hist[hist.length - 1][0];
+  var sx = function (x) { return padL + (x - x0) / (x1 - x0) * (W - padL - padR); };
+  var sy = function (y) { return padT + (1 - (y - y0) / (y1 - y0)) * (H - padT - padB); };
+  var fy = function (v) { return nf(v >= 100 ? 0 : pxDec(v)).format(v); };
+  var g = '';
+  niceTicks(y0, y1, 4).filter(function (t) { return t >= y0 && t <= y1; }).forEach(function (t) { var y = sy(t).toFixed(1); g += '<line class="grid-l" x1="' + padL + '" x2="' + (W - padR + 6) + '" y1="' + y + '" y2="' + y + '"/><text class="ax" x="' + (W - padR + 10) + '" y="' + (+y + 4) + '">' + esc(fy(t)) + '</text>'; });
+  [[x0, 'start'], [nowX, 'middle'], [x1, 'end']].forEach(function (a) { g += '<text class="ax" x="' + sx(a[0]).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="' + a[1] + '">' + esc(a[0] === nowX ? 'heute' : tDM(a[0])) + '</text>'; });
+  var start = { t: nowX, mid: hist[hist.length - 1][1], lo8: hist[hist.length - 1][1], hi8: hist[hist.length - 1][1], lo5: hist[hist.length - 1][1], hi5: hist[hist.length - 1][1] };
+  var F = [start].concat(fut);
+  function band(lo, hi) { return F.map(function (f, i) { return (i ? 'L' : 'M') + sx(f.t).toFixed(1) + ' ' + sy(f[hi]).toFixed(1); }).join('') + F.slice().reverse().map(function (f) { return 'L' + sx(f.t).toFixed(1) + ' ' + sy(f[lo]).toFixed(1); }).join('') + 'Z'; }
+  var up = fut[fut.length - 1].mid >= start.mid, col = up ? 'var(--up)' : 'var(--down)';
+  var hd = hist.map(function (p, i) { return (i ? 'L' : 'M') + sx(p[0]).toFixed(1) + ' ' + sy(p[1]).toFixed(1); }).join('');
+  var md = F.map(function (f, i) { return (i ? 'L' : 'M') + sx(f.t).toFixed(1) + ' ' + sy(f.mid).toFixed(1); }).join('');
+  var nx = sx(nowX).toFixed(1);
+  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="KI-Prognose ' + esc(q.n) + '">' + g +
+    '<rect x="' + nx + '" y="' + padT + '" width="' + (W - padR - nx) + '" height="' + (H - padT - padB) + '" fill="var(--accent)" opacity=".05"/>' +
+    '<line x1="' + nx + '" x2="' + nx + '" y1="' + padT + '" y2="' + (H - padB) + '" stroke="var(--line-2)" stroke-dasharray="3 4"/>' +
+    '<path class="fc-band" d="' + band('lo8', 'hi8') + '" fill="var(--accent)" opacity=".13"/>' +
+    '<path class="fc-band" d="' + band('lo5', 'hi5') + '" fill="var(--accent)" opacity=".22"/>' +
+    '<path d="' + hd + '" fill="none" stroke="var(--fg-2)" stroke-width="1.8" stroke-linejoin="round"/>' +
+    '<path class="fc-mid" d="' + md + '" fill="none" stroke="' + col + '" stroke-width="2.2" stroke-dasharray="6 5" stroke-linecap="round"/>' +
+    '<circle cx="' + nx + '" cy="' + sy(start.mid).toFixed(1) + '" r="4.5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2"/>' +
+    '<circle cx="' + sx(fut[fut.length - 1].t).toFixed(1) + '" cy="' + sy(fut[fut.length - 1].mid).toFixed(1) + '" r="4" fill="' + col + '" stroke="var(--surface)" stroke-width="2"/>' +
+    '<line class="hl" x1="0" x2="0" y1="' + padT + '" y2="' + (H - padB) + '" stroke="var(--line-2)" visibility="hidden"/>' +
+    '<circle class="hd" r="4.5" fill="var(--fg)" stroke="var(--surface)" stroke-width="2" visibility="hidden"/></svg><div class="tip"></div>';
+  var svg = el.querySelector('svg'), hl = el.querySelector('.hl'), hdot = el.querySelector('.hd'), tip = el.querySelector('.tip');
+  var pts = hist.map(function (p) { return { t: p[0], v: p[1] }; }).concat(fut.map(function (f) { return { t: f.t, v: f.mid, f: f }; }));
+  function move(ev) {
+    var r = svg.getBoundingClientRect(), x = (ev.clientX - r.left) / r.width * W, best = pts[0], bd = Infinity;
+    pts.forEach(function (p) { var dd = Math.abs(sx(p.t) - x); if (dd < bd) { bd = dd; best = p; } });
+    var px = sx(best.t), py = sy(best.v);
+    hl.setAttribute('x1', px); hl.setAttribute('x2', px); hl.setAttribute('visibility', 'visible');
+    hdot.setAttribute('cx', px); hdot.setAttribute('cy', py); hdot.setAttribute('visibility', 'visible');
+    tip.innerHTML = best.f ? '<b>' + esc(price(best.v, q.c)) + '</b> <span class="muted">Prognose ' + esc(tDM(best.t)) + '</span><br><span class="muted">80 %: ' + esc(price(best.f.lo8, q.c)) + ' – ' + esc(price(best.f.hi8, q.c)) + '</span>'
+      : '<b>' + esc(price(best.v, q.c)) + '</b> <span class="muted">' + esc(tDM(best.t)) + '</span>';
+    tip.style.left = Math.min(Math.max(px / W * r.width, 90), r.width - 90) + 'px'; tip.style.top = (py / H * r.height) + 'px';
+    el.classList.add('hover');
+  }
+  el.addEventListener('pointermove', move); el.addEventListener('pointerdown', move);
+  el.addEventListener('pointerleave', function () { el.classList.remove('hover'); hl.setAttribute('visibility', 'hidden'); hdot.setAttribute('visibility', 'hidden'); });
+}
 function drawCharts(root) {
   (root || document).querySelectorAll('[data-chart]').forEach(function (el) {
     var c = CH[el.getAttribute('data-chart')]; if (!c || el.__drawn) return;
     el.__drawn = true;
+    if (c.opt.fut) return drawFc(el, c);
     var W = Math.max(260, el.clientWidth || 600), H = c.opt.h || 220, pts = c.pts;
     var padL = 4, padR = c.opt.axisW || 64, padT = 10, padB = 24;
     var xs = pts.map(function (p) { return p[0]; }), ys = pts.map(function (p) { return p[1]; });
@@ -585,7 +645,7 @@ function vOptions() {
 /* ---------------- Detail ---------------- */
 function openDetail(id) {
   if (!Q(id)) return;
-  S.detail = id; S.detailMode = 'h'; S.trade = { side: 'buy', amt: '' };
+  S.detail = id; S.detailMode = Q(id).fc ? 'f' : 'h'; S.trade = { side: 'buy', amt: '' };
   loadDaily(id);
   renderSheet();
   document.getElementById('sheet').classList.add('open'); document.getElementById('sheet-bg').classList.add('open');
@@ -611,7 +671,30 @@ function renderSheet() {
   var dPts = daily ? daily.map(function (x) { return [x[0] * DAY + 12 * HOUR, x[1]]; }) : [];
   var hPts = (q.h || []).map(function (x) { return [x[0] * MIN, x[1]]; });
   var mode = S.detailMode, pts = mode === 'd' ? dPts : hPts;
-  var chart = pts.length >= 2 ? chartBox(pts, { h: 200, label: 'Kursverlauf ' + q.n, axisW: 60, fmtY: function (v) { return nf(v >= 100 ? 0 : pxDec(v)).format(v); }, fmtTip: function (v) { return price(v, q.c); } })
+  var fcBox = '';
+  if (mode === 'f') {
+    var fc = q.fc, Hh = S.fcH || 20;
+    if (!fc) { mode = 'h'; pts = hPts; }
+    else if (dPts.length < 10) {
+      fcBox = '<div class="empty-chart" style="height:200px"><div>Lade Kursgeschichte für die Prognose …</div></div>';
+    } else {
+      var fut = fcPath(q, fc, Hh), end = fut[fut.length - 1], chg = (end.mid / q.p - 1) * 100;
+      var pu = Hh === 20 ? fc.pu : (function () { var z = (fc.mu * Hh) / (fc.s * Math.sqrt(Hh)); var t = 1 / (1 + 0.2316419 * Math.abs(z)), dd = 0.3989423 * Math.exp(-z * z / 2), pp = dd * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274)))); return z > 0 ? 1 - pp : pp; })();
+      var histPts = dPts.slice(-Math.max(40, Hh * 3));
+      if (histPts[histPts.length - 1][0] < Date.now() - DAY) histPts.push([Date.now(), q.p]); else histPts[histPts.length - 1] = [Date.now(), q.p];
+      var ev = S.meta && S.meta.fcEval;
+      var reasons = (fc.why || []).map(function (w) { return '<li class="' + (w[0] === '+' ? 'up' : w[0] === '-' ? 'down' : 'muted') + '"><span>' + (w[0] === '+' ? '▲' : w[0] === '-' ? '▼' : '●') + '</span>' + esc(w[1]) + '</li>'; }).join('');
+      fcBox = chartBox(histPts, { h: 240, fut: fut, q: q }) +
+        '<div class="fc-sum"><div><span>In ' + (q.m === 'cr' ? Hh + ' Tagen' : Hh + ' Handelstagen') + ' (' + esc(tDM(end.t)) + ')</span><b class="num ' + cls(chg) + '">' + esc(price(end.mid, q.c)) + ' <small>' + pct(chg, 1) + '</small></b></div>' +
+        '<div><span>Wahrscheinliche Spanne (80 %)</span><b class="num">' + esc(price(end.lo8, q.c)) + ' – ' + esc(price(end.hi8, q.c)) + '</b></div>' +
+        '<div><span>Chance auf Plus</span><b class="num ' + (pu >= 0.5 ? 'up' : 'down') + '">' + Math.round(pu * 100) + ' %</b></div></div>' +
+        '<div class="fc-meter" aria-hidden="true"><i style="width:' + Math.round(pu * 100) + '%"></i></div>' +
+        '<ul class="fc-why">' + (reasons || '<li class="muted"><span>●</span>Keine besonderen Auffälligkeiten – die Prognose folgt dem normalen Verlauf.</li>') + '</ul>' +
+        '<p class="note" style="margin:6px 0 0">So entsteht sie: Das Modell kombiniert Trend, Übertreibungen, Marktumfeld und die Einschätzung des lernenden Bots und rechnet daraus einen Korridor. Die dunkle Fläche zeigt, wo der Kurs mit 50 % Wahrscheinlichkeit landet, die helle mit 80 %.' +
+        (ev && ev.n ? ' Rückblick über ' + nf(0).format(ev.n) + ' Tests: Richtung in ' + Math.round(ev.dir * 100) + ' % richtig, ' + Math.round(ev.cover * 100) + ' % lagen im 80-%-Korridor.' : '') + ' Keine Garantie und keine Anlageberatung.</p>';
+    }
+  }
+  var chart = mode === 'f' && fcBox ? fcBox : pts.length >= 2 ? chartBox(pts, { h: 200, label: 'Kursverlauf ' + q.n, axisW: 60, fmtY: function (v) { return nf(v >= 100 ? 0 : pxDec(v)).format(v); }, fmtTip: function (v) { return price(v, q.c); } })
     : '<div class="empty-chart" style="height:160px"><div>Der Verlauf füllt sich mit jeder Aktualisierung.<br><span class="note">Bisher ' + pts.length + ' Datenpunkt' + (pts.length === 1 ? '' : 'e') + '.</span></div></div>';
   var bp = S.bot && S.bot.pos[id], mp = S.manual && S.manual.pos && S.manual.pos[id];
   var botBox = '';
@@ -626,7 +709,7 @@ function renderSheet() {
     '<button class="btn" style="padding:6px 10px" data-fav="' + esc(id) + '" aria-pressed="' + fav + '" aria-label="Merken">' + (fav ? I.starOn : I.star) + '</button></div>' +
     '<h2 style="font-size:1.4rem">' + esc(q.n) + '</h2><div class="muted">' + MK[q.m] + (q.sec && q.sec !== 'Sonstige' ? ' · ' + esc(q.sec) : '') + '</div></div>' +
     '<div><div class="d-price num">' + price(q.p, q.c) + '</div><div class="chips"><span class="pill ' + cls(q.ch) + '">' + pct(q.ch) + ' ' + (q.m === 'cr' ? 'in 24 h' : 'heute') + '</span>' + (usd ? '<span class="pill"><span class="lbl">in Euro</span>' + eur(pe(q), pxDec(pe(q))) + '</span>' : '') + '</div></div>' +
-    '<div><div class="card-head" style="margin-bottom:8px"><span class="eyebrow">Kursverlauf</span><div class="seg" role="group"><button data-dmode="h" aria-pressed="' + (mode === 'h') + '">Letzte Tage</button><button data-dmode="d" aria-pressed="' + (mode === 'd') + '">Schlusskurse</button></div></div>' + chart + '</div>' +
+    '<div><div class="card-head" style="margin-bottom:8px"><span class="eyebrow">' + (mode === 'f' ? 'KI-Prognose' : 'Kursverlauf') + '</span><div class="seg" role="group">' + (q.fc ? '<button data-dmode="f" aria-pressed="' + (mode === 'f') + '">KI-Prognose</button>' : '') + '<button data-dmode="h" aria-pressed="' + (mode === 'h') + '">Letzte Tage</button><button data-dmode="d" aria-pressed="' + (mode === 'd') + '">1 Jahr</button></div></div>' + (mode === 'f' ? '<div class="seg fc-h" role="group" style="margin:-2px 0 10px"><button data-fch="5" aria-pressed="' + ((S.fcH || 20) === 5) + '">1 Woche</button><button data-fch="10" aria-pressed="' + ((S.fcH || 20) === 10) + '">2 Wochen</button><button data-fch="20" aria-pressed="' + ((S.fcH || 20) === 20) + '">1 Monat</button></div>' : '') + '' + chart + '</div>' +
     '<div class="facts"><div><span>Kursstand</span><b class="num">' + esc(q.m === 'cr' ? whenShort(q.t) : tDMHM(q.t)) + '</b></div><div><span>Währung</span><b>' + (usd ? 'US-Dollar' : 'Euro') + '</b></div>' +
     '<div><span>Geschätzte Schwankung pro Tag</span><b class="num">± ' + nf(1).format(KW.indicators(q).dayVol) + ' %</b></div><div><span>' + (q.mc ? 'Marktwert' : 'Datenpunkte') + '</span><b class="num">' + (q.mc ? nf(0).format(q.mc / 1e9) + ' Mrd. $' : (q.h || []).length) + '</b></div></div>' +
     botBox + trade + '</div>';
@@ -801,6 +884,7 @@ document.addEventListener('click', function (e) {
     return renderTrade();
   }
   if (d.dmode) { S.detailMode = d.dmode; return renderSheet(); }
+  if (d.fch) { S.fcH = +d.fch; return renderSheet(); }
   if (d.fav) { var f = (S.prefs.fav || []).slice(), i = f.indexOf(d.fav); if (i > -1) f.splice(i, 1); else f.push(d.fav); savePrefs({ fav: f }); toast(i > -1 ? 'Von der Merkliste entfernt.' : 'Auf die Merkliste gesetzt.'); return; }
   if (d.open) { e.preventDefault(); return openDetail(d.open); }
 });

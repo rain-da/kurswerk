@@ -214,6 +214,13 @@ async function main() {
   }
   const res = BRAIN.runRound({ bot: state, brain, settings, market: ing.market, daily, now });
   brain = res.brain;
+  BRAIN.forecastAll(ing.market, daily, brain, res.ctx, now);
+  const today = KW.dayKey(now);
+  if (!brain.fcEval || brain.fcEval.day !== today) {
+    brain.fcEval = Object.assign({ day: today }, BRAIN.evalForecaster(ing.market, daily, res.ctx));
+    say('Prognose-Rückblick:', JSON.stringify(brain.fcEval));
+  }
+  ing.market.fcEval = brain.fcEval;
   ing.market.botEq = +res.equity.toFixed(2);
   ing.market.src = 'Yahoo Finance, CoinGecko';
 

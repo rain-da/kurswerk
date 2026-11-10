@@ -523,7 +523,7 @@ export function runRound({ bot: botIn, brain: brainIn, settings: setIn, market, 
   bot.invest = invest;
   bot.learn = summary(brain);
   bot.equity = r2(eqEnd); bot.runs = (bot.runs || 0) + 1; bot.lastRun = now; bot.v = 2;
-  return { bot, brain, events, equity: eqEnd, bought, topped };
+  return { bot, brain, events, equity: eqEnd, bought, topped, ctx };
 }
 
 export function summary(brain) {
@@ -540,4 +540,90 @@ export function summary(brain) {
   });
   const weights = FEATS.map((k) => [FEAT_LABELS[k], r2(brain.w[k] || 0)]).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
   return { counts: brain.counts, pre: brain.pre, acc: brain.acc.n ? r2(brain.acc.ok / brain.acc.n) : null, accN: brain.acc.n, open: brain.shadow.length, setups: st, weights };
+}
+
+/* ---------- KI-Prognose für jeden Wert ----------
+   Wahrscheinlichkeits-Korridor für die nächsten Tage: Trend, Gegenbewegung bei Übertreibung,
+   Marktumfeld, langfristiger Normalverlauf und die Einschätzung des lernenden Modells. */
+const PRIOR_DRIFT = { us: 0.03, de: 0.025, cr: 0 }; // % pro Tag (langfristig typisch)
+function logRets(closes) { const r = []; for (let i = 1; i < closes.length; i++) if (closes[i - 1] > 0 && closes[i] > 0) r.push(Math.log(closes[i] / closes[i - 1]) * 100); return r; }
+function ewmaVol(r) { if (r.length < 5) return null; let v = r.slice(0, 5).reduce((a, x) => a + x * x, 0) / 5; for (const x of r) v = 0.94 * v + 0.06 * x * x; return Math.sqrt(v); }
+function sd(r) { const m = r.reduce((a, b) => a + b, 0) / r.length; return Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, r.length - 1)); }
+function driftParts(closes, f, m) {
+  const r = logRets(closes);
+  const n = Math.min(60, r.length);
+  const r60 = n ? r.slice(-n).reduce((a, b) => a + b, 0) / n : 0;
+  const sig = r.length >= 10 ? 0.6 * (ewmaVol(r) || sd(r)) + 0.4 * sd(r.slice(-120)) : (BASE_VOL[m] || 2);
+  const parts = [];
+  parts.push(['trend', clamp(0.35 * r60, -0.35 * sig, 0.35 * sig)]);
+  parts.push(['rsi', -0.06 * sig * clamp(f.rsiD, -1, 1) * (Math.abs(f.rsiD) > 0.4 ? 1.5 : 0.5)]);
+  parts.push(['ema', -0.03 * sig * clamp(f.emaDist, -3, 3)]);
+  parts.push(['market', 0.05 * sig * clamp(f.bench + f.breadth, -2, 2)]);
+  parts.push(['prior', PRIOR_DRIFT[m] || 0]);
+  return { parts, sig, n: r.length };
+}
+function normCdf(x) { const t = 1 / (1 + 0.2316419 * Math.abs(x)); const d = 0.3989423 * Math.exp(-x * x / 2); const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274)))); return x > 0 ? 1 - p : p; }
+
+export function forecastAll(market, daily, brain, ctx, now) {
+  const H = 20;
+  for (const id of Object.keys(market.q)) {
+    const q = market.q[id];
+    const sh = KW.dailyShard(id, q);
+    const d = daily[sh] && daily[sh].d && daily[sh].d[id];
+    const closes = d ? d.map((x) => x[1]) : [];
+    if (!closes.length || closes[closes.length - 1] !== q.p) closes.push(q.p);
+    if (closes.length < 30) { delete q.fc; continue; }
+    const { f, aux } = features(closes, q.ch || 0, q.h, q.m, ctx);
+    const { parts, sig } = driftParts(closes, f, q.m);
+    // Einschätzung des lernenden Modells (bestes erkanntes Kaufmuster)
+    let best = null;
+    for (const s of detect(f, aux, q.ch || 0, q.m, true)) {
+      const pr = predict(brain, f, s, q.m);
+      const R = riskPct(s, aux.dv, q.m);
+      const days = Math.max(2, SETUPS[s].maxH / 24);
+      const add = clamp(pr.evR * R / days, -0.4 * sig, 0.4 * sig) * 0.6;
+      if (!best || add > best.add) best = { s, add, p: pr.p };
+    }
+    if (best) parts.push(['model', best.add]);
+    let mu = parts.reduce((a, x) => a + x[1], 0);
+    mu = clamp(mu, -0.6 * sig, 0.6 * sig);
+    const s1 = sig * 1.08; // etwas breiter wegen dicker Ränder
+    const pu = normCdf((mu * H) / (s1 * Math.sqrt(H)));
+    // Begründungen in Klartext
+    const why = [];
+    const tr = parts.find((x) => x[0] === 'trend')[1];
+    if (tr > 0.12 * sig) why.push(['+', 'Aufwärtstrend der letzten Wochen']); else if (tr < -0.12 * sig) why.push(['-', 'Abwärtstrend der letzten Wochen']);
+    if (f.rsiD > 0.4) why.push(['-', 'kurzfristig überkauft – Rücksetzer möglich']); else if (f.rsiD < -0.4) why.push(['+', 'stark überverkauft – Erholung möglich']);
+    if (f.emaDist > 1.5) why.push(['-', 'weit über dem 20-Tage-Schnitt']); else if (f.emaDist < -1.5) why.push(['+', 'weit unter dem 20-Tage-Schnitt']);
+    if (f.bench + f.breadth > 0.8) why.push(['+', 'Gesamtmarkt freundlich']); else if (f.bench + f.breadth < -0.8) why.push(['-', 'Gesamtmarkt schwach']);
+    if (best && best.add > 0.02) why.push(['+', 'Der Bot sieht ein Kaufsignal: „' + SETUPS[best.s].n + '“']);
+    else if (best && best.add < -0.02) why.push(['-', 'Muster „' + SETUPS[best.s].n + '“ lief hier bisher meist schlecht']);
+    if (sig > (BASE_VOL[q.m] || 2) * 1.6) why.push(['~', 'ungewöhnlich starke Schwankungen']);
+    q.fc = { mu: r2c(mu), s: r2c(s1), pu: r2(pu), H, t: now, why: why.slice(0, 4) };
+  }
+}
+
+/* Rückblick: Wie gut hätte diese Prognose in den letzten Monaten gepasst? (ohne Modell-Teil) */
+export function evalForecaster(market, daily, ctx) {
+  const H = 20; let n = 0, hit = 0, cover = 0;
+  for (const id of Object.keys(market.q)) {
+    const q = market.q[id];
+    const d = daily[KW.dailyShard(id, q)]?.d?.[id];
+    if (!d || d.length < 120) continue;
+    const closes = d.map((x) => x[1]);
+    for (let t = 60; t + H < closes.length; t += 7) {
+      const hist = closes.slice(0, t + 1);
+      const ch = (closes[t] / closes[t - 1] - 1) * 100;
+      const { f } = features(hist, ch, null, q.m, { breadth: { [q.m]: 0 }, bench: { [q.m]: 0 }, avg: { [q.m]: 0 } });
+      const { parts, sig } = driftParts(hist, f, q.m);
+      const mu = clamp(parts.reduce((a, x) => a + x[1], 0), -0.6 * sig, 0.6 * sig);
+      const real = Math.log(closes[t + H] / closes[t]) * 100;
+      const band = 1.2816 * sig * 1.08 * Math.sqrt(H);
+      if (Math.abs(mu) > 0.01) { n++; if ((mu > 0) === (real > 0)) hit++; }
+      if (Math.abs(real - mu * H) <= band) cover++;
+    }
+  }
+  void ctx;
+  const total = Math.max(1, n);
+  return { n, dir: r2(hit / total), cover: r2(cover / Math.max(1, n)) };
 }

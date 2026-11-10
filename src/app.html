@@ -293,6 +293,23 @@ select.sel { background: var(--surface); border: 1px solid var(--line); border-r
 .facts span { color: var(--muted); font-size: .76rem; }
 .facts b { font-weight: 600; font-size: .95rem; }
 
+/* KI-Prognose */
+.fc-band { animation: fcIn .9s ease-out both; transform-origin: left; }
+.fc-mid { animation: fcIn 1.1s ease-out both; }
+@keyframes fcIn { from { opacity: 0; clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+.fc-sum { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-top: 12px; }
+.fc-sum div { background: var(--surface); padding: 10px 12px; display: grid; gap: 3px; min-width: 0; }
+.fc-sum span { color: var(--muted); font-size: .74rem; }
+.fc-sum b { font-family: var(--f-display); font-weight: 600; font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fc-sum small { font-family: var(--f-body); font-size: .78rem; }
+.fc-meter { height: 6px; border-radius: 6px; margin-top: 10px; background: color-mix(in srgb, var(--down) 45%, var(--surface-3)); overflow: hidden; }
+.fc-meter i { display: block; height: 100%; background: var(--up); border-radius: 6px; animation: grow 1s cubic-bezier(.2,.8,.2,1) both; transform-origin: left; }
+.fc-why { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; font-size: .88rem; }
+.fc-why li { display: flex; gap: 8px; align-items: baseline; color: var(--fg-2); }
+.fc-why li span { font-size: .7rem; flex: none; }
+.fc-why li.up span { color: var(--up); } .fc-why li.down span { color: var(--down); }
+@media (max-width: 560px) { .fc-sum { grid-template-columns: minmax(0, 1fr); } }
+
 /* Formulare */
 .field { display: grid; gap: 6px; }
 .field label { font-size: .8rem; color: var(--muted); font-weight: 600; }
