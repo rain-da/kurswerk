@@ -260,7 +260,7 @@
       var last = arr[arr.length - 1];
       if (last && last[0] === dn) last[1] = r4(q.p);
       else if (!last || last[0] < dn) arr.push([dn, r4(q.p)]);
-      if (arr.length > 80) arr.splice(0, arr.length - 80);
+      if (arr.length > 260) arr.splice(0, arr.length - 260);
       touched[sh] = 1;
     });
     return touched;

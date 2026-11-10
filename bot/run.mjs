@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KW = require(path.join(ROOT, 'engine.js'));
+const BRAIN = await import(path.join(ROOT, 'bot', 'brain.mjs'));
 
 const STATE_IN = process.env.STATE_IN && fs.existsSync(path.join(process.env.STATE_IN, 'bot_state.json')) ? process.env.STATE_IN : path.join(ROOT, 'data');
 const OUT_DIR = process.env.OUT_DIR || path.join(ROOT, 'data');
@@ -125,6 +126,44 @@ async function fetchCrypto(yahooRes) {
   return out;
 }
 
+/* ---------- Kursgeschichte nachladen (1 Jahr Tageskurse, für Indikatoren und Vortraining) ---------- */
+async function yahooDaily(sym) {
+  const j = await getJson('https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(sym) + '?range=1y&interval=1d');
+  const r = j.chart && j.chart.result && j.chart.result[0];
+  if (!r || !r.timestamp) return null;
+  const c = r.indicators && r.indicators.quote && r.indicators.quote[0] && r.indicators.quote[0].close;
+  const out = [];
+  r.timestamp.forEach((ts, i) => { const v = c && c[i]; if (v > 0) out.push([KW.dayNum(ts * 1000), +(+v).toPrecision(6)]); });
+  return out;
+}
+async function backfill(market, daily, brain, limit) {
+  const todo = [];
+  for (const id of Object.keys(market.q)) {
+    const q = market.q[id], sh = KW.dailyShard(id, q);
+    const have = (daily[sh] && daily[sh].d && daily[sh].d[id]) || [];
+    const tried = brain.backfill[id] || 0;
+    if (have.length >= 120 || now - tried < 7 * 86400000) continue;
+    const u = universe.find((x) => x.id === id);
+    const ysym = u ? u.ysym : q.m === 'cr' ? q.s + '-USD' : null;
+    if (ysym) todo.push({ id, q, sh, ysym });
+  }
+  const batch = todo.slice(0, limit);
+  const got = await pool(batch, 6, (x) => yahooDaily(x.ysym));
+  let n = 0;
+  batch.forEach((x, i) => {
+    brain.backfill[x.id] = now;
+    const hist = got[i]; if (!hist || hist.length < 20) return;
+    const d = daily[x.sh] || (daily[x.sh] = { d: {} }); if (!d.d) d.d = {};
+    const cur = d.d[x.id] || [];
+    const map = new Map(hist.map((e) => [e[0], e[1]]));
+    cur.forEach((e) => map.set(e[0], e[1])); // eigene, neuere Werte haben Vorrang
+    d.d[x.id] = [...map.entries()].sort((a, b) => a[0] - b[0]).slice(-260);
+    n++;
+  });
+  if (batch.length) say('Kursgeschichte nachgeladen:', n, 'von', batch.length, '(offen:', todo.length - batch.length + ')');
+  return todo.length - batch.length;
+}
+
 /* ---------- Ablauf ---------- */
 async function main() {
   // vorheriger Stand
@@ -132,7 +171,7 @@ async function main() {
   const shards = {}; KW.QUOTE_SHARDS.forEach((s) => { shards[s] = readJson(STATE_IN, 'quotes_' + s); });
   const daily = {}; KW.DAILY_SHARDS.forEach((s) => { const d = readJson(STATE_IN, 'daily_' + s); if (d) daily[s] = d; });
   const state = readJson(STATE_IN, 'bot_state');
-  const settings = readJson(USER_DIR, 'bot_settings') || KW.defaultSettings();
+  const settings = Object.assign(BRAIN.defaultSettings(), readJson(USER_DIR, 'bot_settings') || {});
   const market = KW.joinMarket(meta, shards);
 
   // neue Kurse
@@ -155,11 +194,28 @@ async function main() {
     const q = ing.market.q[id];
     if (!held.has(id) && now - (q.t || 0) > 3 * 86400000) delete ing.market.q[id];
   }
-  const res = KW.runBot(state, settings, ing.market, now);
-  ing.market.botEq = +res.equity.toFixed(2);
-  ing.market.src = 'Yahoo Finance, CoinGecko';
   KW.updateDaily(daily, ing.market, ing.changed);
   for (const s of Object.keys(daily)) for (const id of Object.keys(daily[s].d || {})) if (!ing.market.q[id]) delete daily[s].d[id];
+
+  // Gehirn laden, Kursgeschichte ergänzen, einmalig vortrainieren
+  let brain = readJson(STATE_IN, 'brain');
+  if (!brain || brain.v !== 2) { brain = BRAIN.newBrain(); say('Neues Gehirn angelegt'); }
+  const open = await backfill(ing.market, daily, brain, 140);
+  if (!brain.pre.done && open === 0) {
+    const series = [];
+    for (const s of Object.keys(daily)) for (const [id, d] of Object.entries(daily[s].d || {})) {
+      const q = ing.market.q[id]; if (q && d.length >= 80) series.push({ id, m: q.m, d });
+    }
+    if (series.length >= 50) {
+      const n = BRAIN.pretrain(brain, series, now);
+      say('Vortraining:', n, 'historische Situationen aus', series.length, 'Werten');
+      if (state) (state.log = state.log || []).push({ t: now, k: 'learn', x: 'Vortraining abgeschlossen: ' + n.toLocaleString('de-DE') + ' Situationen aus einem Jahr Kursgeschichte von ' + series.length + ' Werten ausgewertet. Der Bot startet jetzt mit Erfahrung.' });
+    }
+  }
+  const res = BRAIN.runRound({ bot: state, brain, settings, market: ing.market, daily, now });
+  brain = res.brain;
+  ing.market.botEq = +res.equity.toFixed(2);
+  ing.market.src = 'Yahoo Finance, CoinGecko';
 
   // schreiben
   fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -168,10 +224,12 @@ async function main() {
   for (const s of KW.QUOTE_SHARDS) writeJson(OUT_DIR, 'quotes_' + s, sp.shards[s]);
   for (const s of KW.DAILY_SHARDS) writeJson(OUT_DIR, 'daily_' + s, daily[s] || { d: {} });
   writeJson(OUT_DIR, 'bot_state', res.bot);
+  writeJson(OUT_DIR, 'brain', brain);
   writeJson(OUT_DIR, 'config_app', { refreshWorkflow: 'bot.yml', updatedAt: now });
 
   say('Kurse aktualisiert:', JSON.stringify(ing.counts), '· EUR/USD', ing.market.fx.EURUSD);
-  say('Depotwert:', Math.round(res.equity), '€ ·', Object.keys(res.bot.pos).length, 'Positionen');
+  say('Depotwert:', Math.round(res.equity), '€ ·', Object.keys(res.bot.pos).length, 'Positionen · Bargeld', Math.round(res.bot.cash), '€');
+  const L = res.bot.learn; say('Gelernt:', JSON.stringify(L.counts), '· offene Schatten-Trades', L.open, '· Prognose-Treffer', L.acc == null ? '–' : Math.round(L.acc * 100) + ' %');
   res.events.forEach((e) => say('•', e));
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '### Kurswerk-Runde\n' + log.map((l) => '- ' + l).join('\n') + '\n');
   if (!quotes.length) { console.error('Keine Kurse erhalten – Daten bleiben unverändert gespeichert.'); }

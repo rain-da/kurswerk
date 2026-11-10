@@ -10,6 +10,19 @@ Sie läuft **komplett kostenlos** und braucht kein Claude-Kontingent:
 
 ---
 
+## Der Auto-Trader (Version 2)
+
+- **Sechs Kaufmuster:** Momentum, Ausbruch (20-Tage-Hoch), Rücksetzer im Aufwärtstrend, Trend, Rebound und Marktführer (stärker als der Markt).
+- **Lernt laufend:** Jedes Signal wird als „Schatten-Trade“ verfolgt, auch wenn der Bot es nicht kauft. Sobald klar ist, wie es ausgegangen wäre, passt ein lernendes Modell seine Einschätzung an. Echte Trades zählen doppelt.
+- **Vortraining:** Beim Start lädt er ein Jahr Tageskurse aller Werte und rechnet daraus tausende historische Situationen durch.
+- **Bessere Ausstiege:** Für jedes Muster testet er parallel mehrere Gewinnziele und nachgezogene Stopps und nimmt das, was am meisten bringt.
+- **Schutz:** Stopp für jeden Trade, Stopp auf Einstand nach +1 R, Tagesverlust-Grenze, Risikostufe sinkt bei Rückgängen automatisch, Obergrenzen je Branche und für Krypto.
+- **Kapitaleinsatz:** In der App unter Optionen → Auto-Trader einstellbar (50 %, 75 %, 90 % oder **Alles**). Bei „Alles“ verteilt der Bot das komplette Geld auf die besten Chancen. Das **Startkapital** (10.000 € bis 1 Mio. €) gilt ab dem nächsten Neustart.
+
+Der Code der App liegt in `src/`; `python3 tools/build.py` baut daraus `index.html`.
+
+---
+
 ## Optional: Geräte verbinden (Einstellungen, eigenes Depot, Design synchronisieren)
 
 Den Bot, seine Gewinnkurve und alle Kurse siehst du auf jedem Gerät automatisch.
