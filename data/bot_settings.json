@@ -1,0 +1,1 @@
+{"enabled": true, "risk": "hoch", "markets": {"us": true, "de": true, "cr": true}, "feePct": 0.1, "resetAt": 0, "invest": 1, "capital": 100000}
